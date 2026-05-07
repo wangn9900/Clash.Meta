@@ -72,9 +72,7 @@ func (c *Config) EffectiveMode(hasReality bool) string {
 		return mode
 	}
 	if hasReality {
-		if c.DownloadConfig != nil {
-			return "stream-up"
-		}
+		// Reality 必须配合流模式才能穿透 CDN 并保持高性能
 		return "stream-one"
 	}
 	return "packet-up"
@@ -83,13 +81,13 @@ func (c *Config) EffectiveMode(hasReality bool) string {
 func (c *Config) NormalizedPath() string {
 	path := c.Path
 	if path == "" {
-		path = "/"
+		return "/"
 	}
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
 	if !strings.HasSuffix(path, "/") {
-		path += "/"
+		path = path + "/"
 	}
 	return path
 }
@@ -176,10 +174,11 @@ func (c *Config) WriteResponseHeader(writer http.ResponseWriter, requestMethod s
 }
 
 func (c *Config) GetNormalizedUplinkHTTPMethod() string {
-	if c.UplinkHTTPMethod == "" {
-		return "POST"
+	method := strings.ToUpper(c.UplinkHTTPMethod)
+	if method != "" {
+		return method
 	}
-	return c.UplinkHTTPMethod
+	return "POST" // 统一使用 POST 以获得最佳兼容性
 }
 
 func (c *Config) GetNormalizedScStreamUpServerSecs() (Range, error) {
@@ -213,7 +212,7 @@ func (c *Config) GetNormalizedScMaxEachPostBytes() (Range, error) {
 }
 
 func (c *Config) GetNormalizedScMinPostsIntervalMs() (Range, error) {
-	r, err := ParseRange(c.ScMinPostsIntervalMs, "30")
+	r, err := ParseRange(c.ScMinPostsIntervalMs, "5-15")
 	if err != nil {
 		return Range{}, fmt.Errorf("invalid sc-min-posts-interval-ms: %w", err)
 	}
@@ -508,8 +507,12 @@ func (c *Config) FillStreamRequest(req *http.Request, sessionID string) error {
 	c.ApplyXPaddingToRequest(req, config)
 	c.ApplyMetaToRequest(req, sessionID, "")
 
-	if req.Body != nil && !c.NoGRPCHeader { // stream-up/one
+	if req.Body != nil && !c.NoGRPCHeader {
 		req.Header.Set("Content-Type", "application/grpc")
+		req.Header.Set("TE", "trailers")
+	}
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 	}
 
 	return nil
@@ -574,6 +577,10 @@ func (c *Config) FillPacketRequest(request *http.Request, sessionId string, seqS
 
 	c.ApplyXPaddingToRequest(request, config)
 	c.ApplyMetaToRequest(request, sessionId, seqStr)
+
+	if request.Header.Get("User-Agent") == "" {
+		request.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	}
 
 	return nil
 }

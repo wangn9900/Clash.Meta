@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -97,6 +98,16 @@ func (h *Hysteria2) ProxyInfo() C.ProxyInfo {
 	info := h.Base.ProxyInfo()
 	info.DialerProxy = h.option.DialerProxy
 	return info
+}
+
+// MarshalJSON implements C.ProxyAdapter
+func (h *Hysteria2) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"type": h.Type().String(),
+		"udp":  true,
+		"up":   h.option.Up,
+		"down": h.option.Down,
+	})
 }
 
 func NewHysteria2(option Hysteria2Option) (*Hysteria2, error) {

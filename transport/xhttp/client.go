@@ -19,28 +19,14 @@ import (
 
 	"github.com/metacubex/http"
 	"github.com/metacubex/http/httptrace"
-	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/quic-go/http3"
 	"github.com/metacubex/tls"
-	"os"
-	"path/filepath"
 )
 
 // xDebugLog 专项调试日志写入
 func xDebugLog(format string, v ...interface{}) {
-	logPath := filepath.Join(C.Path.HomeDir(), "xhttp_debug.log")
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		f, err = os.OpenFile("xhttp_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return
-		}
-	}
-	defer f.Close()
-	msg := fmt.Sprintf(format, v...)
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	f.WriteString(fmt.Sprintf("[%s] %s\n", timestamp, msg))
+	// Debug logging disabled
 }
 
 // ConnIdleTimeout defines the maximum time an idle TCP session can survive in the tunnel,

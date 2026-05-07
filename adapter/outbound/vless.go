@@ -2,8 +2,10 @@ package outbound
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/metacubex/mihomo/component/ech"
 	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/transport/gun"
 	"github.com/metacubex/mihomo/transport/tuic/common"
 	"github.com/metacubex/mihomo/transport/vless"
@@ -115,27 +118,10 @@ type XHTTPReuseSettings struct {
 
 type XHTTPDownloadSettings struct {
 	// xhttp part
-	Path                 *string             `proxy:"path,omitempty"`
-	Host                 *string             `proxy:"host,omitempty"`
-	Headers              *map[string]string  `proxy:"headers,omitempty"`
-	NoGRPCHeader         *bool               `proxy:"no-grpc-header,omitempty"`
-	XPaddingBytes        *string             `proxy:"x-padding-bytes,omitempty"`
-	XPaddingObfsMode     *bool               `proxy:"x-padding-obfs-mode,omitempty"`
-	XPaddingKey          *string             `proxy:"x-padding-key,omitempty"`
-	XPaddingHeader       *string             `proxy:"x-padding-header,omitempty"`
-	XPaddingPlacement    *string             `proxy:"x-padding-placement,omitempty"`
-	XPaddingMethod       *string             `proxy:"x-padding-method,omitempty"`
-	UplinkHTTPMethod     *string             `proxy:"uplink-http-method,omitempty"`
-	SessionPlacement     *string             `proxy:"session-placement,omitempty"`
-	SessionKey           *string             `proxy:"session-key,omitempty"`
-	SeqPlacement         *string             `proxy:"seq-placement,omitempty"`
-	SeqKey               *string             `proxy:"seq-key,omitempty"`
-	UplinkDataPlacement  *string             `proxy:"uplink-data-placement,omitempty"`
-	UplinkDataKey        *string             `proxy:"uplink-data-key,omitempty"`
-	UplinkChunkSize      *string             `proxy:"uplink-chunk-size,omitempty"`
-	ScMaxEachPostBytes   *string             `proxy:"sc-max-each-post-bytes,omitempty"`
-	ScMinPostsIntervalMs *string             `proxy:"sc-min-posts-interval-ms,omitempty"`
-	ReuseSettings        *XHTTPReuseSettings `proxy:"reuse-settings,omitempty"` // aka XMUX
+	Path          *string             `proxy:"path,omitempty"`
+	Host          *string             `proxy:"host,omitempty"`
+	Headers       *map[string]string  `proxy:"headers,omitempty"`
+	ReuseSettings *XHTTPReuseSettings `proxy:"reuse-settings,omitempty"` // aka XMUX
 	// proxy part
 	Server            *string         `proxy:"server,omitempty"`
 	Port              *int            `proxy:"port,omitempty"`
@@ -316,7 +302,19 @@ func (v *Vless) dialContext(ctx context.Context) (c net.Conn, err error) {
 	case "grpc": // gun transport
 		return v.gunClient.Dial()
 	case "xhttp":
-		return v.xhttpClient.Dial()
+		xDebugLog("[XHTTP-DEBUG] xhttp Dial starting for %s", v.addr)
+		startDial := time.Now()
+		c, err = v.xhttpClient.Dial(ctx)
+		if err != nil {
+			xDebugLog("[XHTTP-DEBUG] xhttp Dial FAILED for %s after %v: %v", v.addr, time.Since(startDial), err)
+			return nil, err
+		}
+		dialDuration := time.Since(startDial)
+		xDebugLog("[XHTTP-DEBUG] xhttp Dial SUCCESS for %s, took %v", v.addr, dialDuration)
+
+		// 增加流量追踪
+		wrapped := &debugConn{Conn: c, name: v.addr, dialTime: startDial}
+		return wrapped, nil
 	default:
 	}
 	return v.dialer.DialContext(ctx, "tcp", v.addr)
@@ -324,6 +322,7 @@ func (v *Vless) dialContext(ctx context.Context) (c net.Conn, err error) {
 
 // DialContext implements C.ProxyAdapter
 func (v *Vless) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
+	startDial := time.Now()
 	c, err := v.dialContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%s connect error: %s", v.addr, err.Error())
@@ -334,9 +333,58 @@ func (v *Vless) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn
 
 	c, err = v.StreamConnContext(ctx, c, metadata)
 	if err != nil {
+		xDebugLog("[XHTTP-DEBUG] VLESS StreamConnContext failed: %v", err)
 		return nil, fmt.Errorf("%s connect error: %s", v.addr, err.Error())
 	}
+	
+	// 计算总延迟 (拨号 + 握手)
+	totalDelay := uint16(time.Since(startDial) / time.Millisecond)
+	if totalDelay == 0 {
+		totalDelay = 1
+	}
+	
+	if v.option.Network == "xhttp" {
+		xDebugLog("[XHTTP-DEBUG] XHTTP Handshake SUCCESS for target: %s, total delay: %d ms", metadata.String(), totalDelay)
+	} else {
+		xDebugLog("[XHTTP-DEBUG] VLESS Handshake success for target: %s", metadata.String())
+	}
+	
 	return NewConn(c, v), err
+}
+
+func (v *Vless) XHTTPURLTest(ctx context.Context, metadata *C.Metadata, start time.Time) (uint16, error) {
+	if v.option.Network != "xhttp" {
+		return 0, C.ErrNotSupport
+	}
+
+	baseConn, err := v.xhttpClient.DialFresh(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("%s connect error: %s", v.addr, err.Error())
+	}
+	defer baseConn.Close()
+
+	streamConn, err := v.StreamConnContext(ctx, baseConn, metadata)
+	if err != nil {
+		xDebugLog("[XHTTP-DEBUG] VLESS StreamConnContext failed during URLTest: %v", err)
+		return 0, fmt.Errorf("%s connect error: %s", v.addr, err.Error())
+	}
+	if streamConn != baseConn {
+		defer streamConn.Close()
+	}
+
+	if waiter, ok := baseConn.(interface{ WaitReady(context.Context) error }); ok {
+		if err = waiter.WaitReady(ctx); err != nil {
+			return 0, err
+		}
+	}
+
+	delay := uint16(time.Since(start) / time.Millisecond)
+	if delay == 0 {
+		delay = 1
+	}
+	
+	xDebugLog("[XHTTP-DEBUG] XHTTP fresh roundtrip URLTest SUCCESS for %s: %d ms", v.Name(), delay)
+	return delay, nil
 }
 
 // ListenPacketContext implements C.ProxyAdapter
@@ -387,6 +435,24 @@ func (v *Vless) ProxyInfo() C.ProxyInfo {
 	info := v.Base.ProxyInfo()
 	info.DialerProxy = v.option.DialerProxy
 	return info
+}
+
+// MarshalJSON implements C.ProxyAdapter
+func (v *Vless) MarshalJSON() ([]byte, error) {
+	flow := v.option.Flow
+	if flow == "xtls-rprx-vision" {
+		flow = "XTLS-VISION"
+	}
+
+	return json.Marshal(map[string]any{
+		"type":    v.Type().String(),
+		"flow":    flow,
+		"tls":     v.option.TLS,
+		"reality": v.realityConfig != nil,
+		"network": v.option.Network,
+		"udp":     v.option.UDP,
+		"fingerprint": v.option.ClientFingerprint,
+	})
 }
 
 // Close implements C.ProxyAdapter
@@ -557,6 +623,13 @@ func NewVless(option VlessOption) (*Vless, error) {
 			}
 		}
 
+		if option.XHTTPOpts.Headers == nil {
+			option.XHTTPOpts.Headers = make(map[string]string)
+		}
+		if _, ok := option.XHTTPOpts.Headers["User-Agent"]; !ok {
+			option.XHTTPOpts.Headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+		}
+
 		var hKeepAlivePeriod time.Duration
 
 		var reuseCfg *xhttp.ReuseConfig
@@ -569,6 +642,13 @@ func NewVless(option VlessOption) (*Vless, error) {
 				HMaxReusableSecs: option.XHTTPOpts.ReuseSettings.HMaxReusableSecs,
 			}
 			hKeepAlivePeriod = time.Duration(option.XHTTPOpts.ReuseSettings.HKeepAlivePeriod) * time.Second
+		} else {
+			// 注入默认复用策略，防止并发握手风暴
+			reuseCfg = &xhttp.ReuseConfig{
+				MaxConcurrency: "8",
+				MaxConnections: "8",
+			}
+			hKeepAlivePeriod = 45 * time.Second
 		}
 
 		cfg := &xhttp.Config{
@@ -602,6 +682,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 					return v.dialer.DialContext(ctx, "tcp", v.addr)
 				},
 				func(ctx context.Context, raw net.Conn, isH2 bool) (net.Conn, error) {
+					// 修正：直接复用类已有的 TLS 包装逻辑，确保 Reality/Fingerprint/SNI 逻辑与标准连接一致
 					return v.streamTLSConn(ctx, raw, isH2)
 				},
 				func(ctx context.Context, cfg *quic.Config) (*quic.Conn, error) {
@@ -636,9 +717,26 @@ func NewVless(option VlessOption) (*Vless, error) {
 						return nil, err
 					}
 					_, quicConn, err := common.DialQuic(ctx, v.addr, v.DialOptions(), v.dialer, tlsConfig, cfg, true)
+					if err != nil {
+						return nil, err
+					}
 					return quicConn, nil
 				},
-				v.option.ALPN,
+				// 强制包含 h2，因为 xhttp 几乎完全依赖 HTTP/2 传输
+				func() []string {
+					alpn := v.option.ALPN
+					hasH2 := false
+					for _, s := range alpn {
+						if s == "h2" {
+							hasH2 = true
+							break
+						}
+					}
+					if !hasH2 {
+						alpn = append(alpn, "h2", "http/1.1")
+					}
+					return alpn
+				}(),
 				hKeepAlivePeriod,
 			)
 		}
@@ -687,9 +785,13 @@ func NewVless(option VlessOption) (*Vless, error) {
 
 			downloadHKeepAlivePeriod := hKeepAlivePeriod
 
-			downloadReuseCfg := reuseCfg
+			downloadCfg := *cfg // make a copy
+			downloadCfg.Host = downloadHost
+			downloadCfg.Path = lo.FromPtrOr(ds.Path, v.option.XHTTPOpts.Path)
+			downloadCfg.Headers = lo.FromPtrOr(ds.Headers, v.option.XHTTPOpts.Headers)
+
 			if ds.ReuseSettings != nil {
-				downloadReuseCfg = &xhttp.ReuseConfig{
+				downloadCfg.ReuseConfig = &xhttp.ReuseConfig{
 					MaxConcurrency:   ds.ReuseSettings.MaxConcurrency,
 					MaxConnections:   ds.ReuseSettings.MaxConnections,
 					CMaxReuseTimes:   ds.ReuseSettings.CMaxReuseTimes,
@@ -699,30 +801,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 				downloadHKeepAlivePeriod = time.Duration(ds.ReuseSettings.HKeepAlivePeriod) * time.Second
 			}
 
-			cfg.DownloadConfig = &xhttp.Config{
-				Host:                 downloadHost,
-				Path:                 lo.FromPtrOr(ds.Path, v.option.XHTTPOpts.Path),
-				Mode:                 v.option.XHTTPOpts.Mode,
-				Headers:              lo.FromPtrOr(ds.Headers, v.option.XHTTPOpts.Headers),
-				NoGRPCHeader:         lo.FromPtrOr(ds.NoGRPCHeader, v.option.XHTTPOpts.NoGRPCHeader),
-				XPaddingBytes:        lo.FromPtrOr(ds.XPaddingBytes, v.option.XHTTPOpts.XPaddingBytes),
-				XPaddingObfsMode:     lo.FromPtrOr(ds.XPaddingObfsMode, v.option.XHTTPOpts.XPaddingObfsMode),
-				XPaddingKey:          lo.FromPtrOr(ds.XPaddingKey, v.option.XHTTPOpts.XPaddingKey),
-				XPaddingHeader:       lo.FromPtrOr(ds.XPaddingHeader, v.option.XHTTPOpts.XPaddingHeader),
-				XPaddingPlacement:    lo.FromPtrOr(ds.XPaddingPlacement, v.option.XHTTPOpts.XPaddingPlacement),
-				XPaddingMethod:       lo.FromPtrOr(ds.XPaddingMethod, v.option.XHTTPOpts.XPaddingMethod),
-				UplinkHTTPMethod:     lo.FromPtrOr(ds.UplinkHTTPMethod, v.option.XHTTPOpts.UplinkHTTPMethod),
-				SessionPlacement:     lo.FromPtrOr(ds.SessionPlacement, v.option.XHTTPOpts.SessionPlacement),
-				SessionKey:           lo.FromPtrOr(ds.SessionKey, v.option.XHTTPOpts.SessionKey),
-				SeqPlacement:         lo.FromPtrOr(ds.SeqPlacement, v.option.XHTTPOpts.SeqPlacement),
-				SeqKey:               lo.FromPtrOr(ds.SeqKey, v.option.XHTTPOpts.SeqKey),
-				UplinkDataPlacement:  lo.FromPtrOr(ds.UplinkDataPlacement, v.option.XHTTPOpts.UplinkDataPlacement),
-				UplinkDataKey:        lo.FromPtrOr(ds.UplinkDataKey, v.option.XHTTPOpts.UplinkDataKey),
-				UplinkChunkSize:      lo.FromPtrOr(ds.UplinkChunkSize, v.option.XHTTPOpts.UplinkChunkSize),
-				ScMaxEachPostBytes:   lo.FromPtrOr(ds.ScMaxEachPostBytes, v.option.XHTTPOpts.ScMaxEachPostBytes),
-				ScMinPostsIntervalMs: lo.FromPtrOr(ds.ScMinPostsIntervalMs, v.option.XHTTPOpts.ScMinPostsIntervalMs),
-				ReuseConfig:          downloadReuseCfg,
-			}
+			cfg.DownloadConfig = &downloadCfg
 
 			makeDownloadTransport = func() http.RoundTripper {
 				return xhttp.NewTransport(
@@ -751,6 +830,9 @@ func NewVless(option VlessOption) (*Vless, error) {
 
 							if downloadServerName != "" {
 								tlsOpts.Host = downloadServerName
+							} else {
+								host, _, _ := net.SplitHostPort(downloadAddr)
+								tlsOpts.Host = host
 							}
 
 							return vmess.StreamTLSConn(ctx, conn, &tlsOpts)
@@ -790,6 +872,9 @@ func NewVless(option VlessOption) (*Vless, error) {
 							return nil, err
 						}
 						_, quicConn, err := common.DialQuic(ctx, downloadAddr, v.DialOptions(), v.dialer, tlsConfig, cfg, true)
+						if err != nil {
+							return nil, err
+						}
 						return quicConn, nil
 					},
 					downloadALPN,
@@ -798,11 +883,54 @@ func NewVless(option VlessOption) (*Vless, error) {
 			}
 		}
 
+		log.Debugln("[%s] Creating xhttp client with mode: %s, host: %s, path: %s", v.Name(), cfg.Mode, cfg.Host, cfg.Path)
 		v.xhttpClient, err = xhttp.NewClient(cfg, makeTransport, makeDownloadTransport, v.realityConfig != nil)
 		if err != nil {
+			log.Errorln("[%s] Failed to create xhttp client: %v", v.Name(), err)
 			return nil, err
 		}
+		xDebugLog("[XHTTP-DEBUG] Created dedicated xhttp client for node: %s", v.Name())
 	}
 
 	return v, nil
+}
+
+// xDebugLog 专项调试日志写入
+func xDebugLog(format string, v ...interface{}) {
+	// Debug logging disabled
+}
+
+type debugConn struct {
+	net.Conn
+	name     string
+	dialTime time.Time
+}
+
+func (c *debugConn) Read(b []byte) (n int, err error) {
+	n, err = c.Conn.Read(b)
+	if n > 0 {
+		// xDebugLog("[XHTTP-DEBUG-DATA] %s Read %d bytes, since dial: %v", c.name, n, time.Since(c.dialTime))
+	}
+	if err != nil && err != io.EOF {
+		xDebugLog("[XHTTP-DEBUG-DATA] %s Read Error after %v: %v", c.name, time.Since(c.dialTime), err)
+	}
+	return
+}
+
+func (c *debugConn) Write(b []byte) (n int, err error) {
+	n, err = c.Conn.Write(b)
+	if n > 0 {
+		// xDebugLog("[XHTTP-DEBUG-DATA] %s Write %d bytes, since dial: %v", c.name, n, time.Since(c.dialTime))
+	}
+	if err != nil {
+		xDebugLog("[XHTTP-DEBUG-DATA] %s Write Error after %v: %v", c.name, time.Since(c.dialTime), err)
+	}
+	return
+}
+
+func (c *debugConn) WaitReady(ctx context.Context) error {
+	if waiter, ok := c.Conn.(interface{ WaitReady(context.Context) error }); ok {
+		return waiter.WaitReady(ctx)
+	}
+	return nil
 }

@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -330,6 +331,18 @@ func (v *Vmess) ProxyInfo() C.ProxyInfo {
 	info := v.Base.ProxyInfo()
 	info.DialerProxy = v.option.DialerProxy
 	return info
+}
+
+// MarshalJSON implements C.ProxyAdapter
+func (v *Vmess) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"type":    v.Type().String(),
+		"tls":     v.option.TLS,
+		"reality": v.realityConfig != nil,
+		"network": v.option.Network,
+		"udp":     v.option.UDP,
+		"fingerprint": v.option.ClientFingerprint,
+	})
 }
 
 // Close implements C.ProxyAdapter

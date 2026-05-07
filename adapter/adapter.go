@@ -211,6 +211,30 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 	}
 
 	start := time.Now()
+	// 暴力补丁：剥开所有包装壳，寻找真正实现了 XHTTPURLTest 的适配器
+	var adapter any = p.ProxyAdapter
+	for adapter != nil {
+		if xhttpTester, ok := adapter.(interface {
+			XHTTPURLTest(context.Context, *C.Metadata, time.Time) (uint16, error)
+		}); ok {
+			t, err = xhttpTester.XHTTPURLTest(ctx, &addr, start)
+			if err == nil {
+				satisfied = true
+				return
+			}
+			break
+		}
+
+		// 尝试剥壳
+		if unwrapper, ok := adapter.(interface{ PlainAdapter() C.ProxyAdapter }); ok {
+			adapter = unwrapper.PlainAdapter()
+		} else if unwrapper, ok := adapter.(interface{ Adapter() C.ProxyAdapter }); ok {
+			adapter = unwrapper.Adapter()
+		} else {
+			break
+		}
+	}
+
 	instance, err := p.DialContext(ctx, &addr)
 	if err != nil {
 		return

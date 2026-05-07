@@ -1,17 +1,46 @@
 package xhttp
 
 import (
+	"context"
 	"errors"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/httputils"
 )
 
+type readyState struct {
+	ch   chan struct{}
+	once sync.Once
+	err  error
+}
+
+func newReadyState() *readyState {
+	return &readyState{ch: make(chan struct{})}
+}
+
+func (r *readyState) signal(err error) {
+	r.once.Do(func() {
+		r.err = err
+		close(r.ch)
+	})
+}
+
+func (r *readyState) wait(ctx context.Context) error {
+	select {
+	case <-r.ch:
+		return r.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 type Conn struct {
 	writer  io.WriteCloser
 	reader  io.ReadCloser
 	onClose func()
+	ready   *readyState
 	httputils.NetAddr
 
 	// deadlines
@@ -33,6 +62,13 @@ func (c *Conn) Close() error {
 		c.onClose()
 	}
 	return errors.Join(err, err2)
+}
+
+func (c *Conn) WaitReady(ctx context.Context) error {
+	if c.ready == nil {
+		return nil
+	}
+	return c.ready.wait(ctx)
 }
 
 func (c *Conn) SetReadDeadline(t time.Time) error  { return c.SetDeadline(t) }

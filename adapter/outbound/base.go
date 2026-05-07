@@ -385,6 +385,10 @@ func (p *autoCloseProxyAdapter) Close() error {
 	return p.closeErr
 }
 
+func (p *autoCloseProxyAdapter) PlainAdapter() C.ProxyAdapter {
+	return p.ProxyAdapter
+}
+
 func NewAutoCloseProxyAdapter(adapter ProxyAdapter) ProxyAdapter {
 	proxy := &autoCloseProxyAdapter{
 		ProxyAdapter: adapter,

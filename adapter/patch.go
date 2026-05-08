@@ -1,5 +1,5 @@
 package adapter
 
-type UrlTestCheck func(url string, name string, delay uint16)
+type UrlTestCheck func(url string, name string, delay uint16) uint16
 
 var UrlTestHook UrlTestCheck

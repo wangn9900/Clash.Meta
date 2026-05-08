@@ -75,7 +75,7 @@ func (c *Config) EffectiveMode(hasReality bool) string {
 		// Reality 必须配合流模式才能穿透 CDN 并保持高性能
 		return "stream-one"
 	}
-	return "packet-up"
+	return "stream-one"
 }
 
 func (c *Config) NormalizedPath() string {
@@ -201,7 +201,7 @@ func (c *Config) GetNormalizedScMaxBufferedPosts() (Range, error) {
 }
 
 func (c *Config) GetNormalizedScMaxEachPostBytes() (Range, error) {
-	r, err := ParseRange(c.ScMaxEachPostBytes, "1000000")
+	r, err := ParseRange(c.ScMaxEachPostBytes, "524288-1572864")
 	if err != nil {
 		return Range{}, fmt.Errorf("invalid sc-max-each-post-bytes: %w", err)
 	}
@@ -212,7 +212,7 @@ func (c *Config) GetNormalizedScMaxEachPostBytes() (Range, error) {
 }
 
 func (c *Config) GetNormalizedScMinPostsIntervalMs() (Range, error) {
-	r, err := ParseRange(c.ScMinPostsIntervalMs, "5-15")
+	r, err := ParseRange(c.ScMinPostsIntervalMs, "20-40")
 	if err != nil {
 		return Range{}, fmt.Errorf("invalid sc-min-posts-interval-ms: %w", err)
 	}

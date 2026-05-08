@@ -30,7 +30,7 @@ func (entry *reuseEntry) close() {
 	if !entry.closed.CompareAndSwap(false, true) {
 		return
 	}
-	httputils.CloseTransport(entry.transport)
+	go httputils.CloseTransport(entry.transport)
 }
 
 type ReuseTransport struct {

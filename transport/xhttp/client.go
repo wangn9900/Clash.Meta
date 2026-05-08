@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -148,17 +147,11 @@ func (c *PacketUpWriter) write(b []byte) (int, error) {
 }
 
 func (c *PacketUpWriter) Close() error {
-	ch := make(chan struct{})
-	go func() { // flush in the background
-		defer close(ch)
+	go func() {
 		c.flush()
+		c.cancel()
+		httputils.CloseTransport(c.transport)
 	}()
-	select {
-	case <-ch:
-	case <-time.After(time.Second):
-	}
-	c.cancel()
-	httputils.CloseTransport(c.transport)
 	return nil
 }
 
@@ -297,20 +290,15 @@ func (c *Client) GetConfig() *Config {
 
 func (c *Client) Close() error {
 	c.cancel()
-	var errs []error
-	if c.uploadManager != nil {
-		err := c.uploadManager.Close()
-		if err != nil {
-			errs = append(errs, err)
+	go func() {
+		if c.uploadManager != nil {
+			_ = c.uploadManager.Close()
 		}
-	}
-	if c.downloadManager != nil {
-		err := c.downloadManager.Close()
-		if err != nil {
-			errs = append(errs, err)
+		if c.downloadManager != nil {
+			_ = c.downloadManager.Close()
 		}
-	}
-	return errors.Join(errs...)
+	}()
+	return nil
 }
 
 func (c *Client) Dial(ctx context.Context) (net.Conn, error) {
@@ -442,9 +430,11 @@ func (c *Client) DialStreamOne(ctx context.Context) (net.Conn, error) {
 
 	conn.reader = wrc
 	conn.onClose = func() {
-		_ = pr.Close()
-		httputils.CloseTransport(transport)
-		reqCancel()
+		go func() {
+			_ = pr.Close()
+			httputils.CloseTransport(transport)
+			reqCancel()
+		}()
 	}
 
 	return conn, nil
@@ -700,9 +690,11 @@ func (c *Client) DialPacketUp(ctx context.Context) (net.Conn, error) {
 
 	conn.reader = wrc
 	conn.onClose = func() {
-		// uploadTransport already closed by writer
-		httputils.CloseTransport(downloadTransport)
-		reqCancel()
+		go func() {
+			// uploadTransport already closed by writer
+			httputils.CloseTransport(downloadTransport)
+			reqCancel()
+		}()
 	}
 
 	return conn, nil

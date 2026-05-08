@@ -168,7 +168,7 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 
 	defer func() {
 		if UrlTestHook != nil {
-			UrlTestHook(url, p.Name(), t)
+			t = UrlTestHook(url, p.Name(), t)
 		}
 
 		alive := err == nil

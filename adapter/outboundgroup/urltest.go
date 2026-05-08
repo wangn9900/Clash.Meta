@@ -18,7 +18,8 @@ type urlTestOption func(*URLTest)
 
 func urlTestWithTolerance(tolerance uint16) urlTestOption {
 	return func(u *URLTest) {
-		u.tolerance = tolerance
+		// 强制 0 宽容度，绝对选优
+		u.tolerance = 0
 	}
 }
 
@@ -226,6 +227,7 @@ func NewURLTest(option *GroupCommonOption, providers []P.ProxyProvider, options 
 		disableUDP:     option.DisableUDP,
 		testUrl:        option.URL,
 		expectedStatus: option.ExpectedStatus,
+		tolerance:      0,
 	}
 
 	for _, option := range options {

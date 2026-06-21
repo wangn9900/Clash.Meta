@@ -501,7 +501,11 @@ func parseVlessAddr(metadata *C.Metadata, xudp bool) *vless.DstAddr {
 
 func NewVless(option VlessOption) (*Vless, error) {
 	var addons *vless.Addons
-	if len(option.Flow) >= 16 {
+	if option.Flow == "mom-vision" || option.Flow == "mom-private" {
+		addons = &vless.Addons{
+			Flow: option.Flow,
+		}
+	} else if len(option.Flow) >= 16 {
 		option.Flow = option.Flow[:16]
 		if option.Flow != vless.XRV {
 			return nil, fmt.Errorf("unsupported xtls flow type: %s", option.Flow)
@@ -582,6 +586,8 @@ func NewVless(option VlessOption) (*Vless, error) {
 			UserAgent:    option.GrpcOpts.GrpcUserAgent,
 			Host:         option.ServerName,
 			PingInterval: option.GrpcOpts.PingInterval,
+			Headers:      option.GrpcOpts.CustomHeaders,
+			Obfuscated:   option.GrpcOpts.Obfuscated,
 		}
 		if option.ServerName == "" {
 			gunConfig.Host = v.addr

@@ -84,12 +84,14 @@ type HTTP2Options struct {
 }
 
 type GrpcOptions struct {
-	GrpcServiceName string `proxy:"grpc-service-name,omitempty"`
-	GrpcUserAgent   string `proxy:"grpc-user-agent,omitempty"`
-	PingInterval    int    `proxy:"ping-interval,omitempty"`
-	MaxConnections  int    `proxy:"max-connections,omitempty"`
-	MinStreams      int    `proxy:"min-streams,omitempty"`
-	MaxStreams      int    `proxy:"max-streams,omitempty"`
+	GrpcServiceName string            `proxy:"grpc-service-name,omitempty"`
+	GrpcUserAgent   string            `proxy:"grpc-user-agent,omitempty"`
+	PingInterval    int               `proxy:"ping-interval,omitempty"`
+	MaxConnections  int               `proxy:"max-connections,omitempty"`
+	MinStreams      int               `proxy:"min-streams,omitempty"`
+	MaxStreams      int               `proxy:"max-streams,omitempty"`
+	CustomHeaders   map[string]string `proxy:"custom-headers,omitempty"`
+	Obfuscated      bool              `proxy:"obfuscated,omitempty"`
 }
 
 type WSOptions struct {
@@ -434,6 +436,8 @@ func NewVmess(option VmessOption) (*Vmess, error) {
 			UserAgent:    option.GrpcOpts.GrpcUserAgent,
 			Host:         option.ServerName,
 			PingInterval: option.GrpcOpts.PingInterval,
+			Headers:      option.GrpcOpts.CustomHeaders,
+			Obfuscated:   option.GrpcOpts.Obfuscated,
 		}
 		if option.ServerName == "" {
 			gunConfig.Host = v.addr

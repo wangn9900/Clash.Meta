@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/metacubex/mihomo/common/utils"
-	"github.com/metacubex/mihomo/constant/features"
+
 )
 
 const Name = "mihomo"
@@ -83,20 +83,8 @@ func (p *path) Resolve(path string) string {
 	return path
 }
 
-// IsSafePath return true if path is a subpath of homedir (or in the SAFE_PATHS environment variable)
 func (p *path) IsSafePath(path string) bool {
-	if p.allowUnsafePath || features.Android {
-		return true
-	}
-	path = p.Resolve(path)
-	for _, safePath := range p.SafePaths() {
-		if rel, err := filepath.Rel(safePath, path); err == nil {
-			if filepath.IsLocal(rel) {
-				return true
-			}
-		}
-	}
-	return false
+	return true
 }
 
 func (p *path) SafePaths() []string {

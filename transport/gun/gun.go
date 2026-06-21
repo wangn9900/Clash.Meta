@@ -32,6 +32,14 @@ var (
 	ErrSmallBuffer   = errors.New("buffer too small")
 )
 
+var grpcObfsKey = []byte("MOMclashGRPCObfuscationKey")
+
+func xorInPlace(data []byte, key []byte, offset int) {
+	for i := 0; i < len(data); i++ {
+		data[i] ^= key[(offset+i)%len(key)]
+	}
+}
+
 var defaultHeader = http.Header{
 	"Content-Type": []string{"application/grpc"},
 	"User-Agent":   []string{"grpc-go/1.36.0"},
@@ -49,6 +57,7 @@ type Conn struct {
 	initErr  error
 	reader   io.ReadCloser
 	remain   int
+	readOffset int
 
 	closeMutex sync.Mutex
 	closed     bool
@@ -56,6 +65,7 @@ type Conn struct {
 
 	// deadlines
 	deadline *time.Timer
+	obfuscated bool
 }
 
 type Config struct {
@@ -63,6 +73,8 @@ type Config struct {
 	UserAgent    string
 	Host         string
 	PingInterval int
+	Headers      map[string]string
+	Obfuscated   bool
 }
 
 func (g *Conn) initReader() {
@@ -106,6 +118,10 @@ func (g *Conn) read(b []byte) (n int, err error) {
 		}
 
 		n, err = g.reader.Read(b[:size])
+		if g.obfuscated && n > 0 {
+			xorInPlace(b[:n], grpcObfsKey, g.readOffset)
+			g.readOffset += n
+		}
 		g.remain -= n
 		return
 	}
@@ -125,6 +141,7 @@ func (g *Conn) read(b []byte) (n int, err error) {
 		return 0, ErrInvalidLength
 	}
 	g.remain = int(protobufPayloadLen)
+	g.readOffset = 0
 	return g.read(b)
 }
 
@@ -139,6 +156,9 @@ func (g *Conn) Write(b []byte) (n int, err error) {
 	buf[5] = 0x0A
 	binary.PutUvarint(buf[6:], uint64(dataLen))
 	copy(buf[6+varLen:], b)
+	if g.obfuscated {
+		xorInPlace(buf[6+varLen:6+varLen+dataLen], grpcObfsKey, 0)
+	}
 
 	_, err = g.writer.Write(buf)
 	if err == io.ErrClosedPipe {
@@ -164,6 +184,9 @@ func (g *Conn) WriteBuffer(buffer *buf.Buffer) error {
 	binary.BigEndian.PutUint32(header[1:5], uint32(1+varLen+dataLen))
 	header[5] = 0x0A
 	binary.PutUvarint(header[6:], uint64(dataLen))
+	if g.obfuscated {
+		xorInPlace(buffer.Bytes()[6+varLen:], grpcObfsKey, 0)
+	}
 	_, err := g.writer.Write(buffer.Bytes())
 
 	if err == io.ErrClosedPipe {
@@ -324,6 +347,11 @@ func (t *Transport) Dial() (net.Conn, error) {
 	if t.cfg.UserAgent != "" {
 		header.Set("User-Agent", t.cfg.UserAgent)
 	}
+	if len(t.cfg.Headers) > 0 {
+		for k, v := range t.cfg.Headers {
+			header.Set(k, v)
+		}
+	}
 
 	request := &http.Request{
 		Method: http.MethodPost,
@@ -341,11 +369,9 @@ func (t *Transport) Dial() (net.Conn, error) {
 		Header:     header,
 	}
 	request = request.WithContext(t.ctx)
-	initStarted := make(chan struct{})
 
 	conn := &Conn{
 		initFn: func(addr *httputils.NetAddr) (io.ReadCloser, error) {
-			close(initStarted)
 			request = request.WithContext(httputils.NewAddrContext(addr, request.Context()))
 			response, err := t.transport.RoundTrip(request)
 			if err != nil {
@@ -353,17 +379,14 @@ func (t *Transport) Dial() (net.Conn, error) {
 			}
 			return response.Body, nil
 		},
-		writer: writer,
+		writer:     writer,
+		obfuscated: t.cfg.Obfuscated,
 	}
 
 	t.count.Add(1)
 	conn.onClose = func() { t.count.Add(-1) }
 
 	go conn.Init()
-
-	// ensure conn.initOnce.Do has been called before return
-	// prevent the race caused by the return side immediately calling conn.Close
-	<-initStarted
 
 	return conn, nil
 }

@@ -450,6 +450,19 @@ func (c *Client) Close() error {
 func (c *Client) getTransport() *Transport {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
+	// ⚡ 自愈机制：过滤掉所有已经没有活跃 stream (count <= 0) 的旧 Transport 并将其 Close，
+	// 迫使重新 Dial 时建立全新健康的 TCP/HTTP2 物理长连接，防止切换节点后复用已死旧连接假死。
+	var activeTransports []*Transport
+	for _, t := range c.transports {
+		if t.count.Load() <= 0 {
+			_ = t.Close()
+		} else {
+			activeTransports = append(activeTransports, t)
+		}
+	}
+	c.transports = activeTransports
+
 	var transport *Transport
 	for _, t := range c.transports {
 		if transport == nil || t.count.Load() < transport.count.Load() {

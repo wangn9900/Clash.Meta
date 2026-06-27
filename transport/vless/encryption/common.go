@@ -255,8 +255,7 @@ func ParsePadding(padding string, paddingLens, paddingGaps *[][3]int) (err error
 
 func CreatPadding(paddingLens, paddingGaps [][3]int) (length int, lens []int, gaps []time.Duration) {
 	if len(paddingLens) == 0 {
-		paddingLens = [][3]int{{100, 111, 1111}, {50, 0, 3333}}
-		paddingGaps = [][3]int{{75, 0, 111}}
+		return 0, nil, nil
 	}
 	for _, y := range paddingLens {
 		l := 0

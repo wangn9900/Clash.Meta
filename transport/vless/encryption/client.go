@@ -146,20 +146,26 @@ func (i *ClientInstance) Handshake(conn net.Conn) (*CommonConn, error) {
 	pfsPublicKey := append(mlkem768DKey.EncapsulationKey().Bytes(), x25519SKey.PublicKey().Bytes()...)
 	nfsAEAD.Seal(pfsKeyExchange[:18], nil, pfsPublicKey, nil)
 
-	padding := clientHello[ivAndRealysLength+pfsKeyExchangeLength:]
-	nfsAEAD.Seal(padding[:0], nil, EncodeLength(paddingLength-18), nil)
-	nfsAEAD.Seal(padding[:18], nil, padding[18:paddingLength-16], nil)
+	if paddingLength > 0 {
+		padding := clientHello[ivAndRealysLength+pfsKeyExchangeLength:]
+		nfsAEAD.Seal(padding[:0], nil, EncodeLength(paddingLength-18), nil)
+		nfsAEAD.Seal(padding[:18], nil, padding[18:paddingLength-16], nil)
 
-	paddingLens[0] = ivAndRealysLength + pfsKeyExchangeLength + paddingLens[0]
-	for i, l := range paddingLens { // sends padding in a fragmented way, to create variable traffic pattern, before inner VLESS flow takes control
-		if l > 0 {
-			if _, err := conn.Write(clientHello[:l]); err != nil {
-				return nil, err
+		paddingLens[0] = ivAndRealysLength + pfsKeyExchangeLength + paddingLens[0]
+		for i, l := range paddingLens { // sends padding in a fragmented way, to create variable traffic pattern, before inner VLESS flow takes control
+			if l > 0 {
+				if _, err := conn.Write(clientHello[:l]); err != nil {
+					return nil, err
+				}
+				clientHello = clientHello[l:]
 			}
-			clientHello = clientHello[l:]
+			if len(paddingGaps) > i {
+				time.Sleep(paddingGaps[i])
+			}
 		}
-		if len(paddingGaps) > i {
-			time.Sleep(paddingGaps[i])
+	} else {
+		if _, err := conn.Write(clientHello); err != nil {
+			return nil, err
 		}
 	}
 

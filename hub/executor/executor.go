@@ -42,7 +42,10 @@ import (
 	"github.com/metacubex/mihomo/tunnel"
 )
 
-var mux sync.Mutex
+var (
+	mux        sync.Mutex
+	Standalone = false
+)
 
 func readConfig(path string) ([]byte, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -104,8 +107,10 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	updateGeneral(cfg.General, true)
 	updateNTP(cfg.NTP)
 	updateDNS(cfg.DNS, cfg.General.IPv6)
-	//updateListeners(cfg.General, cfg.Listeners, force)
-	//updateTun(cfg.General) // tun should not care "force"
+	if Standalone {
+		updateListeners(cfg.General, cfg.Listeners, force)
+		updateTun(cfg.General) // tun should not care "force"
+	}
 	updateIPTables(cfg)
 	updateTunnels(cfg.Tunnels)
 

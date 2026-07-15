@@ -67,6 +67,7 @@ func init() {
 }
 
 func main() {
+	executor.Standalone = true
 	// Defensive programming: panic when code mistakenly calls net.DefaultResolver
 	net.DefaultResolver.PreferGo = true
 	net.DefaultResolver.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
